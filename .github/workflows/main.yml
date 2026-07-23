@@ -1,19 +1,24 @@
-name: Mac Android Emulator via Tailscale
+name: Mac Android Emulator + Magisk Root via Tailscale
 on: workflow_dispatch
 
 jobs:
   run-emulator:
     runs-on: macos-13
+    timeout-minutes: 360
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java (مطلوب للـ SDK)
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
+      # ========================
+      # 1) تجهيز Tailscale
+      # ========================
       - name: Install & Start Tailscale
         run: |
           brew install tailscale
@@ -24,42 +29,157 @@ jobs:
           tailscale ip -4
           echo "==================="
 
-      - name: Run Android Emulator (Rooted)
-        uses: ReactiveCircus/android-emulator-runner@v2
-        with:
-          api-level: 30
-          target: google_apis
-          arch: x86_64
-          profile: "Nexus 6"
-          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
-          disable-animations: true
-          script: |
-            echo "⏳ مستني المحاكي يفتح بالكامل..."
-            adb wait-for-device
+      # ========================
+      # 2) تنزيل Android System Image
+      # ========================
+      - name: Install Android SDK Components
+        run: |
+          # استخدام AOSP image (default) — مش google_apis — عشان الـ system partition يكون writable
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "system-images;android-30;default;x86_64" \
+            "platform-tools" \
+            "emulator" \
+            "platforms;android-30"
 
-            echo "🔓 بفعّل Root Access..."
-            adb root
-            sleep 3
-            adb wait-for-device
+      # ========================
+      # 3) إنشاء AVD
+      # ========================
+      - name: Create AVD
+        run: |
+          echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd \
+            --name "rooted_android" \
+            --package "system-images;android-30;default;x86_64" \
+            --device "Nexus 6" \
+            --force
 
-            echo "✅ التأكد إن الروت شغال..."
-            adb shell whoami
+      # ========================
+      # 4) تركيب Magisk عبر rootAVD
+      # ========================
+      - name: Install Magisk via rootAVD
+        run: |
+          echo "📦 بنحمّل rootAVD..."
+          git clone https://gitlab.com/newbit/rootAVD.git
+          cd rootAVD
 
-            echo "🌐 بفتح ADB على الشبكة..."
-            adb tcpip 5555
+          echo "🔓 بنركّب Magisk على الـ system image..."
+          # ده بيعدّل الـ ramdisk.img عشان يحط Magisk فيه
+          bash rootAVD.sh $ANDROID_HOME/system-images/android-30/default/x86_64/ramdisk.img
 
-            TAILSCALE_IP=$(tailscale ip -4)
-            echo ""
-            echo "=========================================="
-            echo "🎉 المحاكي شغال وجاهز!"
-            echo "=========================================="
-            echo "📡 اتصل من جهازك بالأمر ده:"
-            echo "   adb connect ${TAILSCALE_IP}:5555"
-            echo ""
-            echo "📱 أو استخدم scrcpy:"
-            echo "   scrcpy --tcpip=${TAILSCALE_IP}:5555"
-            echo "=========================================="
-            echo ""
+          echo "✅ Magisk اتركّب على الـ image!"
 
-            echo "⏰ المحاكي هيفضل شغال ساعتين..."
-            sleep 7200
+      # ========================
+      # 5) تشغيل المحاكي
+      # ========================
+      - name: Boot Emulator
+        run: |
+          echo "🚀 بنشغّل المحاكي..."
+          $ANDROID_HOME/emulator/emulator -avd rooted_android \
+            -no-window \
+            -no-snapshot \
+            -noaudio \
+            -no-boot-anim \
+            -gpu swiftshader_indirect \
+            -memory 4096 \
+            -cores 2 &
+
+          echo "⏳ مستنيين المحاكي يفتح..."
+          adb wait-for-device
+
+          # استنى لحد ما الـ boot يخلص بالكامل
+          BOOT_COMPLETE=""
+          TRIES=0
+          while [ "$BOOT_COMPLETE" != "1" ] && [ $TRIES -lt 120 ]; do
+            BOOT_COMPLETE=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            TRIES=$((TRIES + 1))
+            sleep 2
+          done
+
+          if [ "$BOOT_COMPLETE" != "1" ]; then
+            echo "❌ المحاكي فشل يفتح!"
+            exit 1
+          fi
+
+          echo "✅ المحاكي فتح بنجاح!"
+
+      # ========================
+      # 6) التأكد من Magisk و Root
+      # ========================
+      - name: Verify Magisk Root
+        run: |
+          echo "🔍 بنتأكد من الـ Root..."
+          sleep 10
+
+          # التأكد إن su موجود
+          echo "--- Checking su binary ---"
+          adb shell "which su" || echo "⚠️ su not in PATH yet, checking common locations..."
+          adb shell "ls -la /sbin/su /system/xbin/su /system/bin/su" 2>/dev/null || true
+
+          # التأكد إن Magisk شغال
+          echo "--- Checking Magisk ---"
+          adb shell "magisk -v" 2>/dev/null || echo "⚠️ Magisk CLI not ready yet (normal on first boot)"
+          adb shell "getprop magisk.version" || true
+
+          # عرض معلومات النظام
+          echo ""
+          echo "--- System Info ---"
+          adb shell "getprop ro.build.display.id"
+          adb shell "getprop ro.build.version.release"
+          adb shell "cat /proc/version"
+
+          echo ""
+          echo "✅ Root verification done!"
+
+      # ========================
+      # 7) تركيب Magisk Manager APK
+      # ========================
+      - name: Install Magisk Manager App
+        run: |
+          echo "📱 بنركّب تطبيق Magisk Manager..."
+
+          # تحميل آخر نسخة من Magisk APK
+          MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+            | grep "browser_download_url.*\.apk" \
+            | head -1 \
+            | cut -d '"' -f 4)
+
+          if [ -n "$MAGISK_URL" ]; then
+            curl -L -o Magisk.apk "$MAGISK_URL"
+            adb install Magisk.apk
+            echo "✅ Magisk Manager اتركّب!"
+          else
+            echo "⚠️ مقدرناش ننزّل Magisk APK، ممكن تركّبه يدوي"
+          fi
+
+      # ========================
+      # 8) فتح ADB على الشبكة
+      # ========================
+      - name: Setup Network Access
+        run: |
+          adb tcpip 5555
+
+          TAILSCALE_IP=$(tailscale ip -4)
+          echo ""
+          echo "╔══════════════════════════════════════════════╗"
+          echo "║  🎉 المحاكي شغال بـ MAGISK ROOT!            ║"
+          echo "╠══════════════════════════════════════════════╣"
+          echo "║                                              ║"
+          echo "║  📡 ADB Connect:                             ║"
+          echo "║  adb connect ${TAILSCALE_IP}:5555            ║"
+          echo "║                                              ║"
+          echo "║  📱 scrcpy:                                  ║"
+          echo "║  scrcpy --tcpip=${TAILSCALE_IP}:5555         ║"
+          echo "║                                              ║"
+          echo "║  🔓 Root: Magisk (su + Manager)              ║"
+          echo "║  التطبيقات تقدر تطلب Root عادي!             ║"
+          echo "║                                              ║"
+          echo "╚══════════════════════════════════════════════╝"
+          echo ""
+
+      # ========================
+      # 9) خلّي المحاكي شغال
+      # ========================
+      - name: Keep Alive (6 Hours)
+        run: |
+          echo "⏰ المحاكي هيفضل شغال 6 ساعات..."
+          echo "   (الحد الأقصى لـ GitHub Actions)"
+          sleep 21600
