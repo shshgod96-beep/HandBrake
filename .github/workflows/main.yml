@@ -1,0 +1,34 @@
+name: Mac Android Emulator via Tailscale
+on: workflow_dispatch
+
+jobs:
+  run-emulator:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install & Start Tailscale
+        run: |
+          # تسطيب تيلسكيل على الماك
+          brew install tailscale
+          sudo tailscaled &
+          # هنا هتحط مفتاح المصادقة بتاعك من إعدادات تيلسكيل في الـ Secrets
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_KEY }}
+          # عرض الآي بي عشان تعرف تدخل عليه
+          tailscale ip -4
+
+      - name: Run Android Emulator
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 29 # إصدار الأندرويد (Android 10) وتقدر تغيره
+          target: default
+          arch: x86_64
+          profile: Nexus 6
+          script: |
+            echo "المحاكي شغال زي الفل!"
+            # فتح بورت الـ ADB عشان ندخل عليه عن بعد
+            adb tcpip 5555
+            echo "تقدر دلوقتي تتصل بالمحاكي من جهازك..."
+            # السطر ده عشان يخلي السيرفر شغال وميفصلش (مثلاً لمدة ساعتين = 7200 ثانية)
+            sleep 7200
