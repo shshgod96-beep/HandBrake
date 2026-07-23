@@ -3,32 +3,63 @@ on: workflow_dispatch
 
 jobs:
   run-emulator:
-    runs-on: macos-latest
+    runs-on: macos-13
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Java (مطلوب للـ SDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Install & Start Tailscale
         run: |
-          # تسطيب تيلسكيل على الماك
           brew install tailscale
           sudo tailscaled &
-          # هنا هتحط مفتاح المصادقة بتاعك من إعدادات تيلسكيل في الـ Secrets
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_KEY }}
-          # عرض الآي بي عشان تعرف تدخل عليه
+          sleep 5
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
+          echo "=== Tailscale IP ==="
           tailscale ip -4
+          echo "==================="
 
-      - name: Run Android Emulator
+      - name: Run Android Emulator (Rooted)
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
-          api-level: 29 # إصدار الأندرويد (Android 10) وتقدر تغيره
-          target: default
+          api-level: 30
+          target: google_apis
           arch: x86_64
-          profile: Nexus 6
+          profile: "Nexus 6"
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
           script: |
-            echo "المحاكي شغال زي الفل!"
-            # فتح بورت الـ ADB عشان ندخل عليه عن بعد
+            echo "⏳ مستني المحاكي يفتح بالكامل..."
+            adb wait-for-device
+
+            echo "🔓 بفعّل Root Access..."
+            adb root
+            sleep 3
+            adb wait-for-device
+
+            echo "✅ التأكد إن الروت شغال..."
+            adb shell whoami
+
+            echo "🌐 بفتح ADB على الشبكة..."
             adb tcpip 5555
-            echo "تقدر دلوقتي تتصل بالمحاكي من جهازك..."
-            # السطر ده عشان يخلي السيرفر شغال وميفصلش (مثلاً لمدة ساعتين = 7200 ثانية)
+
+            TAILSCALE_IP=$(tailscale ip -4)
+            echo ""
+            echo "=========================================="
+            echo "🎉 المحاكي شغال وجاهز!"
+            echo "=========================================="
+            echo "📡 اتصل من جهازك بالأمر ده:"
+            echo "   adb connect ${TAILSCALE_IP}:5555"
+            echo ""
+            echo "📱 أو استخدم scrcpy:"
+            echo "   scrcpy --tcpip=${TAILSCALE_IP}:5555"
+            echo "=========================================="
+            echo ""
+
+            echo "⏰ المحاكي هيفضل شغال ساعتين..."
             sleep 7200
