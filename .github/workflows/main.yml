@@ -3,7 +3,7 @@ on: workflow_dispatch
 
 jobs:
   run-emulator:
-    runs-on: macos-13
+    runs-on: macos-14 # استخدام Apple Silicon M1 (متوفر أسرع وبدون طابور طويل)
     timeout-minutes: 360
 
     steps:
@@ -30,13 +30,13 @@ jobs:
           echo "==================="
 
       # ========================
-      # 2) تنزيل Android System Image
+      # 2) تنزيل Android System Image (arm64-v8a)
       # ========================
       - name: Install Android SDK Components
         run: |
-          # استخدام AOSP image (default) — مش google_apis — عشان الـ system partition يكون writable
+          # استخدام معمارية arm64-v8a عشان تتوافق مع معالجات M1 وتبقى أسرع بكتير
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "system-images;android-30;default;x86_64" \
+            "system-images;android-30;default;arm64-v8a" \
             "platform-tools" \
             "emulator" \
             "platforms;android-30"
@@ -48,7 +48,7 @@ jobs:
         run: |
           echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd \
             --name "rooted_android" \
-            --package "system-images;android-30;default;x86_64" \
+            --package "system-images;android-30;default;arm64-v8a" \
             --device "Nexus 6" \
             --force
 
@@ -62,8 +62,7 @@ jobs:
           cd rootAVD
 
           echo "🔓 بنركّب Magisk على الـ system image..."
-          # ده بيعدّل الـ ramdisk.img عشان يحط Magisk فيه
-          bash rootAVD.sh $ANDROID_HOME/system-images/android-30/default/x86_64/ramdisk.img
+          bash rootAVD.sh $ANDROID_HOME/system-images/android-30/default/arm64-v8a/ramdisk.img
 
           echo "✅ Magisk اتركّب على الـ image!"
 
@@ -85,7 +84,6 @@ jobs:
           echo "⏳ مستنيين المحاكي يفتح..."
           adb wait-for-device
 
-          # استنى لحد ما الـ boot يخلص بالكامل
           BOOT_COMPLETE=""
           TRIES=0
           while [ "$BOOT_COMPLETE" != "1" ] && [ $TRIES -lt 120 ]; do
@@ -108,25 +106,8 @@ jobs:
         run: |
           echo "🔍 بنتأكد من الـ Root..."
           sleep 10
-
-          # التأكد إن su موجود
-          echo "--- Checking su binary ---"
-          adb shell "which su" || echo "⚠️ su not in PATH yet, checking common locations..."
-          adb shell "ls -la /sbin/su /system/xbin/su /system/bin/su" 2>/dev/null || true
-
-          # التأكد إن Magisk شغال
-          echo "--- Checking Magisk ---"
-          adb shell "magisk -v" 2>/dev/null || echo "⚠️ Magisk CLI not ready yet (normal on first boot)"
-          adb shell "getprop magisk.version" || true
-
-          # عرض معلومات النظام
-          echo ""
-          echo "--- System Info ---"
-          adb shell "getprop ro.build.display.id"
-          adb shell "getprop ro.build.version.release"
-          adb shell "cat /proc/version"
-
-          echo ""
+          adb shell "which su" || true
+          adb shell "magisk -v" 2>/dev/null || true
           echo "✅ Root verification done!"
 
       # ========================
@@ -135,8 +116,6 @@ jobs:
       - name: Install Magisk Manager App
         run: |
           echo "📱 بنركّب تطبيق Magisk Manager..."
-
-          # تحميل آخر نسخة من Magisk APK
           MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
             | grep "browser_download_url.*\.apk" \
             | head -1 \
@@ -147,7 +126,7 @@ jobs:
             adb install Magisk.apk
             echo "✅ Magisk Manager اتركّب!"
           else
-            echo "⚠️ مقدرناش ننزّل Magisk APK، ممكن تركّبه يدوي"
+            echo "⚠️ مقدرناش ننزّل Magisk APK"
           fi
 
       # ========================
@@ -156,24 +135,17 @@ jobs:
       - name: Setup Network Access
         run: |
           adb tcpip 5555
-
           TAILSCALE_IP=$(tailscale ip -4)
           echo ""
           echo "╔══════════════════════════════════════════════╗"
           echo "║  🎉 المحاكي شغال بـ MAGISK ROOT!            ║"
           echo "╠══════════════════════════════════════════════╣"
-          echo "║                                              ║"
           echo "║  📡 ADB Connect:                             ║"
           echo "║  adb connect ${TAILSCALE_IP}:5555            ║"
           echo "║                                              ║"
           echo "║  📱 scrcpy:                                  ║"
           echo "║  scrcpy --tcpip=${TAILSCALE_IP}:5555         ║"
-          echo "║                                              ║"
-          echo "║  🔓 Root: Magisk (su + Manager)              ║"
-          echo "║  التطبيقات تقدر تطلب Root عادي!             ║"
-          echo "║                                              ║"
           echo "╚══════════════════════════════════════════════╝"
-          echo ""
 
       # ========================
       # 9) خلّي المحاكي شغال
@@ -181,5 +153,4 @@ jobs:
       - name: Keep Alive (6 Hours)
         run: |
           echo "⏰ المحاكي هيفضل شغال 6 ساعات..."
-          echo "   (الحد الأقصى لـ GitHub Actions)"
           sleep 21600
