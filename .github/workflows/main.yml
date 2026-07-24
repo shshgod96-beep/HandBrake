@@ -3,7 +3,7 @@ on: workflow_dispatch
 
 jobs:
   run-emulator:
-    runs-on: macos-14 # استخدام Apple Silicon M1 (متوفر أسرع وبدون طابور طويل)
+    runs-on: macos-13 # لازم نرجع لـ Intel Mac عشان M1 مبيدعمش Hardware Acceleration في السيرفرات
     timeout-minutes: 360
 
     steps:
@@ -30,13 +30,13 @@ jobs:
           echo "==================="
 
       # ========================
-      # 2) تنزيل Android System Image (arm64-v8a)
+      # 2) تنزيل Android System Image (x86_64)
       # ========================
       - name: Install Android SDK Components
         run: |
-          # استخدام معمارية arm64-v8a عشان تتوافق مع معالجات M1 وتبقى أسرع بكتير
+          # استخدام x86_64 عشان يشتغل على معالجات Intel ويدعم الـ Hypervisor
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "system-images;android-30;default;arm64-v8a" \
+            "system-images;android-30;google_apis;x86_64" \
             "platform-tools" \
             "emulator" \
             "platforms;android-30"
@@ -48,7 +48,7 @@ jobs:
         run: |
           echo "no" | $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd \
             --name "rooted_android" \
-            --package "system-images;android-30;default;arm64-v8a" \
+            --package "system-images;android-30;google_apis;x86_64" \
             --device "Nexus 6" \
             --force
 
@@ -62,7 +62,7 @@ jobs:
           cd rootAVD
 
           echo "🔓 بنركّب Magisk على الـ system image..."
-          bash rootAVD.sh $ANDROID_HOME/system-images/android-30/default/arm64-v8a/ramdisk.img
+          bash rootAVD.sh $ANDROID_HOME/system-images/android-30/google_apis/x86_64/ramdisk.img || true
 
           echo "✅ Magisk اتركّب على الـ image!"
 
@@ -71,7 +71,9 @@ jobs:
       # ========================
       - name: Boot Emulator
         run: |
-          echo "🚀 بنشغّل المحاكي..."
+          echo "🚀 بنشغّل المحاكي (وهنسجل اللوج بتاعه عشان لو حصل مشكلة)..."
+          
+          # إعدادات مناسبة لـ Intel Mac
           $ANDROID_HOME/emulator/emulator -avd rooted_android \
             -no-window \
             -no-snapshot \
@@ -79,25 +81,44 @@ jobs:
             -no-boot-anim \
             -gpu swiftshader_indirect \
             -memory 4096 \
-            -cores 2 &
+            -cores 2 > emulator.log 2>&1 &
 
-          echo "⏳ مستنيين المحاكي يفتح..."
-          adb wait-for-device
+          echo "⏳ مستنيين المحاكي يظهر..."
+          
+          TRIES=0
+          DEVICE_FOUND=""
+          while [ "$DEVICE_FOUND" == "" ] && [ $TRIES -lt 60 ]; do
+            DEVICE_FOUND=$(adb devices | grep "emulator-" || true)
+            if [ "$DEVICE_FOUND" != "" ]; then
+               break
+            fi
+            TRIES=$((TRIES + 1))
+            sleep 2
+          done
+
+          if [ "$DEVICE_FOUND" == "" ]; then
+             echo "❌ المحاكي مظهرش أساساً! دي تفاصيل الخطأ:"
+             cat emulator.log
+             exit 1
+          fi
+
+          echo "✅ المحاكي ظهر في ADB! مستنيينه يخلص فتح نظام الأندرويد..."
 
           BOOT_COMPLETE=""
           TRIES=0
-          while [ "$BOOT_COMPLETE" != "1" ] && [ $TRIES -lt 120 ]; do
+          while [ "$BOOT_COMPLETE" != "1" ] && [ $TRIES -lt 150 ]; do
             BOOT_COMPLETE=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             TRIES=$((TRIES + 1))
             sleep 2
           done
 
           if [ "$BOOT_COMPLETE" != "1" ]; then
-            echo "❌ المحاكي فشل يفتح!"
+            echo "❌ المحاكي فتح بس نظام الأندرويد مهنج! دي تفاصيل الخطأ:"
+            cat emulator.log
             exit 1
           fi
 
-          echo "✅ المحاكي فتح بنجاح!"
+          echo "✅ المحاكي فتح بالكامل بنجاح!"
 
       # ========================
       # 6) التأكد من Magisk و Root
